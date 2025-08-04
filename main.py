@@ -1,4 +1,4 @@
-# filename: main.py (Definitive Final Version)
+# filename: main.py (Definitive Final Version - Optimized for Speed and Strength)
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import chess
@@ -10,7 +10,8 @@ CORS(app, resources={r"/suggest": {"origins": "*"}})
 stockfish_path = os.environ.get("STOCKFISH_PATH", "stockfish")
 
 try:
-    stockfish = Stockfish(path=stockfish_path)
+    # Optimize Stockfish for faster performance on a free server
+    stockfish = Stockfish(path=stockfish_path, parameters={"Threads": 1, "Hash": 128})
     print(f"Stockfish engine initialized successfully from path: {stockfish_path}")
 except Exception as e:
     print(f"CRITICAL: Error initializing Stockfish from path '{stockfish_path}': {e}")
@@ -30,7 +31,13 @@ def get_strategic_explanation(board, best_move_uci, principal_variation_uci):
     if principal_variation_uci and len(principal_variation_uci) > 1:
         try:
             temp_board = board.copy()
-            pv_moves_san = [temp_board.san(chess.Move.from_uci(m)) for m in principal_variation_uci]
+            # We need to parse moves one by one as SAN depends on current board state
+            pv_moves_san = []
+            for uci_move in principal_variation_uci:
+                move_obj = chess.Move.from_uci(uci_move)
+                pv_moves_san.append(temp_board.san(move_obj))
+                temp_board.push(move_obj)
+            
             pv_explanation += f"\n\nThe engine's long-term plan is to follow with: "
             pv_explanation += f"1. You play **{pv_moves_san[0]}**. "
             if len(pv_moves_san) > 1: pv_explanation += f"Opponent will likely respond with **{pv_moves_san[1]}**. "
@@ -61,17 +68,17 @@ def suggest():
         board = chess.Board(fen)
         if board.is_game_over(): return jsonify({ "best_move": None, "explanation": "The game is over.", "evaluation": "N/A" })
 
-        # --- UPDATED ELO MAPPING ---
-        if elo <= 1200: skill_level, depth = 3, 5
-        elif elo <= 1600: skill_level, depth = 8, 8
-        elif elo <= 2000: skill_level, depth = 13, 12
-        elif elo <= 2500: skill_level, depth = 18, 15
-        elif elo <= 3000: skill_level, depth = 20, 18 # Pro level
-        else: skill_level, depth = 20, 22           # Max / Grandmaster level
+        # --- OPTIMIZED ELO MAPPING FOR SPEED AND STRENGTH ---
+        if elo <= 1200: skill_level, depth = 5, 5
+        elif elo <= 1600: skill_level, depth = 10, 8
+        elif elo <= 2000: skill_level, depth = 15, 12
+        elif elo <= 2500: skill_level, depth = 20, 14 # Super strong, but fast
+        else: skill_level, depth = 20, 16           # GM level, optimized for speed
 
         stockfish.set_skill_level(skill_level)
         stockfish.set_depth(depth)
         stockfish.set_fen_position(fen)
+        
         top_moves = stockfish.get_top_moves(1)
         if not top_moves: return jsonify({ "best_move": None, "explanation": "No legal moves available.", "evaluation": "N/A" })
 
