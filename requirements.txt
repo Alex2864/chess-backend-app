@@ -1,0 +1,5 @@
+# filename: requirements.txt
+Flask
+Flask-Cors
+python-chess
+gunicorn
