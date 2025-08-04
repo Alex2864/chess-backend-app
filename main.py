@@ -1,21 +1,27 @@
- # filename: main.py (Final version with robust CORS)
+# filename: main.py (Final version that uses the explicit path)
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import chess
 from stockfish import Stockfish
+import os # Import the 'os' module to read environment variables
 
 # --- Initialization ---
 app = Flask(__name__)
-# This is the updated, more robust CORS configuration.
-# It explicitly allows all origins (*) to access the /suggest endpoint.
 CORS(app, resources={r"/suggest": {"origins": "*"}})
 
+# THIS IS THE CRITICAL NEW SECTION:
+# Get the path to the Stockfish executable from the environment variable
+stockfish_path = os.environ.get("STOCKFISH_PATH", "stockfish") # Default to 'stockfish' if not found
+
 try:
-    stockfish = Stockfish()
-    print("Stockfish engine initialized successfully.")
+    # Initialize Stockfish with the explicit path
+    stockfish = Stockfish(path=stockfish_path)
+    print(f"Stockfish engine initialized successfully from path: {stockfish_path}")
 except Exception as e:
-    print(f"CRITICAL: Error initializing Stockfish: {e}")
+    print(f"CRITICAL: Error initializing Stockfish from path '{stockfish_path}': {e}")
     stockfish = None
+
+# --- (The rest of your code is exactly the same) ---
 
 def format_evaluation(eval_data):
     if eval_data['type'] == 'cp':
