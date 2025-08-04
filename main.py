@@ -1,4 +1,4 @@
- # filename: main.py (The new, smarter version)
+ # filename: main.py (The smart version with Stockfish)
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import chess
@@ -9,23 +9,19 @@ app = Flask(__name__)
 CORS(app)
 
 # Initialize Stockfish. The library will automatically find the engine.
-# We create one instance and reuse it for efficiency.
-# Parameters can be set per-move later.
 try:
     stockfish = Stockfish()
     print("Stockfish engine initialized successfully.")
 except Exception as e:
-    print(f"Error initializing Stockfish: {e}")
+    print(f"CRITICAL: Error initializing Stockfish: {e}")
     stockfish = None
 
 # --- Helper Function ---
 def format_evaluation(eval_data):
     if eval_data['type'] == 'cp':
-        # Centipawns to standard pawn advantage format (e.g., +0.25)
         pawn_advantage = eval_data['value'] / 100.0
         return f"{pawn_advantage:+.2f}"
     elif eval_data['type'] == 'mate':
-        # Mate in X moves
         return f"Mate in {abs(eval_data['value'])}"
     return "N/A"
 
@@ -57,42 +53,22 @@ def suggest():
                 "evaluation": "N/A"
             })
 
-        # --- Map ELO to Stockfish Skill Level (0-20) and Depth ---
-        # Lower ELO means less thinking time (lower depth) and more errors (lower skill).
-        if elo <= 1000:
-            skill_level = 1
-            depth = 5
-        elif elo <= 1400:
-            skill_level = 5
-            depth = 8
-        elif elo <= 1800:
-            skill_level = 10
-            depth = 12
-        elif elo <= 2200:
-            skill_level = 15
-            depth = 15
-        else: # Grandmaster level
-            skill_level = 20
-            depth = 20
+        if elo <= 1000: skill_level, depth = 1, 5
+        elif elo <= 1400: skill_level, depth = 5, 8
+        elif elo <= 1800: skill_level, depth = 10, 12
+        elif elo <= 2200: skill_level, depth = 15, 15
+        else: skill_level, depth = 20, 20
 
         stockfish.set_skill_level(skill_level)
         stockfish.set_depth(depth)
-
-        # Set the position and get the best move
         stockfish.set_fen_position(fen)
         best_move = stockfish.get_best_move()
 
         if best_move is None:
-             return jsonify({
-                "best_move": None,
-                "explanation": "No legal moves available.",
-                "evaluation": "N/A"
-            })
+             return jsonify({ "best_move": None, "explanation": "No legal moves available.", "evaluation": "N/A" })
 
-        # Get the evaluation after finding the best move
         evaluation_data = stockfish.get_evaluation()
         evaluation_str = format_evaluation(evaluation_data)
-        
         explanation = f"Stockfish (ELO approx. {elo}) suggests this move after analyzing to a depth of {depth}."
 
         return jsonify({
@@ -103,12 +79,7 @@ def suggest():
         
     except Exception as e:
         print(f"An error occurred in /suggest: {e}")
-        return jsonify({
-            "error": "An internal server error occurred while analyzing the position.",
-            "best_move": None,
-            "explanation": str(e),
-            "evaluation": "N/A"
-        }), 500
+        return jsonify({ "error": "An internal server error occurred." }), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
