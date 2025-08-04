@@ -1,33 +1,69 @@
-# filename: main.py (Final version that uses the explicit path)
+# filename: main.py (Final version with Strategic Explanation Engine)
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import chess
 from stockfish import Stockfish
-import os # Import the 'os' module to read environment variables
+import os
 
 # --- Initialization ---
 app = Flask(__name__)
 CORS(app, resources={r"/suggest": {"origins": "*"}})
-
-# THIS IS THE CRITICAL NEW SECTION:
-# Get the path to the Stockfish executable from the environment variable
-stockfish_path = os.environ.get("STOCKFISH_PATH", "stockfish") # Default to 'stockfish' if not found
+stockfish_path = os.environ.get("STOCKFISH_PATH", "stockfish")
 
 try:
-    # Initialize Stockfish with the explicit path
     stockfish = Stockfish(path=stockfish_path)
     print(f"Stockfish engine initialized successfully from path: {stockfish_path}")
 except Exception as e:
     print(f"CRITICAL: Error initializing Stockfish from path '{stockfish_path}': {e}")
     stockfish = None
 
-# --- (The rest of your code is exactly the same) ---
+# --- NEW: Strategic Explanation Engine ---
+def get_strategic_explanation(board, best_move_uci, principal_variation_uci):
+    """Generates a detailed explanation including short-term tactics and long-term plans."""
+    move = chess.Move.from_uci(best_move_uci)
+    
+    # Part 1: Simple Tactical Reason
+    simple_explanation = ""
+    if board.gives_check(move):
+        simple_explanation = "This move puts the opponent's king in check, forcing a response."
+    elif board.is_capture(move):
+        piece_name = chess.piece_name(board.piece_at(move.to_square).piece_type) if board.piece_at(move.to_square) else "piece"
+        simple_explanation = f"This is a good move because it captures the opponent's {piece_name}."
+    elif board.is_castling(move):
+        simple_explanation = "Castling is a great move that improves king safety and connects your rooks."
+    else:
+        simple_explanation = "This is a solid move that improves your position and piece coordination."
+
+    # Part 2: Long-Term Strategic Plan (from the Principal Variation)
+    pv_explanation = ""
+    if principal_variation_uci and len(principal_variation_uci) > 1:
+        try:
+            temp_board = board.copy()
+            pv_moves_san = []
+            
+            # Convert the entire PV to human-readable format (SAN)
+            for uci_move in principal_variation_uci:
+                move_obj = chess.Move.from_uci(uci_move)
+                pv_moves_san.append(temp_board.san(move_obj))
+                temp_board.push(move_obj)
+            
+            # Build the story
+            pv_explanation += f"\n\nThe engine's long-term plan is to follow with: "
+            pv_explanation += f"1. You play **{pv_moves_san[0]}**. "
+            if len(pv_moves_san) > 1:
+                pv_explanation += f"Your opponent will likely respond with **{pv_moves_san[1]}**. "
+            if len(pv_moves_san) > 2:
+                pv_explanation += f"You can then continue the advantage with **{pv_moves_san[2]}**. "
+            
+        except Exception as e:
+            print(f"Error generating PV explanation: {e}")
+            pv_explanation = "" # If anything goes wrong, just skip it
+
+    return simple_explanation + pv_explanation
 
 def format_evaluation(eval_data):
-    if eval_data['type'] == 'cp':
-        return f"{eval_data['value'] / 100.0:+.2f}"
-    elif eval_data['type'] == 'mate':
-        return f"Mate in {abs(eval_data['value'])}"
+    if eval_data['type'] == 'cp': return f"{eval_data['value'] / 100.0:+.2f}"
+    if eval_data['type'] == 'mate': return f"Mate in {abs(eval_data['value'])}"
     return "N/A"
 
 @app.route('/')
@@ -37,37 +73,42 @@ def home():
 
 @app.route('/suggest', methods=['POST'])
 def suggest():
-    if stockfish is None:
-        return jsonify({"error": "Stockfish engine is not available."}), 503
+    if stockfish is None: return jsonify({"error": "Stockfish engine is not available."}), 503
     try:
         data = request.get_json()
         fen = data['fen']
         elo = int(data['elo'])
 
         board = chess.Board(fen)
-        if board.is_game_over():
-            return jsonify({ "best_move": None, "explanation": "The game is over.", "evaluation": "N/A" })
+        if board.is_game_over(): return jsonify({ "best_move": None, "explanation": "The game is over.", "evaluation": "N/A" })
 
-        if elo <= 1000: skill_level, depth = 1, 5
-        elif elo <= 1400: skill_level, depth = 5, 8
-        elif elo <= 1800: skill_level, depth = 10, 12
-        elif elo <= 2200: skill_level, depth = 15, 15
-        else: skill_level, depth = 20, 20
+        # NEW: Expanded ELO Levels for deeper analysis
+        if elo <= 1200: skill_level, depth = 3, 5
+        elif elo <= 1600: skill_level, depth = 8, 8
+        elif elo <= 2000: skill_level, depth = 13, 12
+        elif elo <= 2500: skill_level, depth = 18, 15
+        elif elo <= 3000: skill_level, depth = 20, 18
+        else: skill_level, depth = 20, 22 # Max strength
 
         stockfish.set_skill_level(skill_level)
         stockfish.set_depth(depth)
         stockfish.set_fen_position(fen)
-        best_move = stockfish.get_best_move()
 
-        if best_move is None:
-            return jsonify({ "best_move": None, "explanation": "No legal moves available.", "evaluation": "N/A" })
+        # Get not just the best move, but the top line of play
+        top_moves = stockfish.get_top_moves(1)
+        if not top_moves: return jsonify({ "best_move": None, "explanation": "No legal moves available.", "evaluation": "N/A" })
 
-        evaluation_data = stockfish.get_evaluation()
-        evaluation_str = format_evaluation(evaluation_data)
-        explanation = f"Stockfish (ELO approx. {elo}) suggests this move after analyzing to a depth of {depth}."
+        best_move_info = top_moves[0]
+        best_move_uci = best_move_info["Move"]
+        principal_variation_uci = best_move_info.get("Line", {}).get("moves", [])
+
+        # Use the new strategic explanation engine
+        explanation = get_strategic_explanation(board, best_move_uci, principal_variation_uci)
+        
+        evaluation_str = format_evaluation({"type": best_move_info["Centipawn"] is not None and "cp" or "mate", "value": best_move_info["Centipawn"] or best_move_info["Mate"]})
 
         return jsonify({
-            "best_move": best_move,
+            "best_move": best_move_uci,
             "explanation": explanation,
             "evaluation": evaluation_str
         })
