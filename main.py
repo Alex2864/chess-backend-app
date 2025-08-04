@@ -1,63 +1,55 @@
-# filename: main.py
+ # filename: main.py (The new, smarter version)
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import chess
-import random
+from stockfish import Stockfish
 
 # --- Initialization ---
 app = Flask(__name__)
-# Enable CORS to allow your frontend to communicate with this backend from any website
 CORS(app)
 
-print("Chess engine starting...")
+# Initialize Stockfish. The library will automatically find the engine.
+# We create one instance and reuse it for efficiency.
+# Parameters can be set per-move later.
+try:
+    stockfish = Stockfish()
+    print("Stockfish engine initialized successfully.")
+except Exception as e:
+    print(f"Error initializing Stockfish: {e}")
+    stockfish = None
 
-# --- Chess Logic ---
-def get_best_move_simple(board, skill_level):
-    """Simple move selection based on skill level"""
-    legal_moves = list(board.legal_moves)
-    if not legal_moves:
-        return None
-
-    # For higher skill levels, prefer captures and checks
-    if skill_level > 15:
-        good_moves = []
-        for move in legal_moves:
-            # Check for captures
-            if board.is_capture(move):
-                good_moves.append(move)
-            # Check for checks (without making the move)
-            if board.gives_check(move):
-                good_moves.append(move)
-        
-        if good_moves:
-            return random.choice(good_moves)
-
-    # Otherwise, return a random legal move
-    return random.choice(legal_moves)
+# --- Helper Function ---
+def format_evaluation(eval_data):
+    if eval_data['type'] == 'cp':
+        # Centipawns to standard pawn advantage format (e.g., +0.25)
+        pawn_advantage = eval_data['value'] / 100.0
+        return f"{pawn_advantage:+.2f}"
+    elif eval_data['type'] == 'mate':
+        # Mate in X moves
+        return f"Mate in {abs(eval_data['value'])}"
+    return "N/A"
 
 # --- API Routes (Endpoints) ---
 
-# This is a "health check" route. It's good practice to have one.
 @app.route('/')
 def home():
+    status = "healthy" if stockfish is not None else "degraded (Stockfish not running)"
     return jsonify({
-        "message": "Python Chess Engine API is running.",
-        "status": "healthy"
+        "message": "Python Chess Engine API with Stockfish is running.",
+        "status": status
     })
 
-# This is your main endpoint that the frontend will call.
 @app.route('/suggest', methods=['POST'])
 def suggest():
+    if stockfish is None:
+        return jsonify({"error": "Stockfish engine is not available."}), 503
+
     try:
         data = request.get_json()
-        if not data:
-            return jsonify({"error": "Invalid JSON payload"}), 400
-
         fen = data['fen']
-        level = int(data['elo'])
+        elo = int(data['elo'])
 
         board = chess.Board(fen)
-        
         if board.is_game_over():
             return jsonify({
                 "best_move": None,
@@ -65,24 +57,58 @@ def suggest():
                 "evaluation": "N/A"
             })
 
-        skill_level = min(max((level - 800) // 60, 0), 20)
-        best_move = get_best_move_simple(board, skill_level)
-        move_uci = best_move.uci()
-        explanation = f"Recommended move for ELO {level} (Skill: {skill_level}/20)."
+        # --- Map ELO to Stockfish Skill Level (0-20) and Depth ---
+        # Lower ELO means less thinking time (lower depth) and more errors (lower skill).
+        if elo <= 1000:
+            skill_level = 1
+            depth = 5
+        elif elo <= 1400:
+            skill_level = 5
+            depth = 8
+        elif elo <= 1800:
+            skill_level = 10
+            depth = 12
+        elif elo <= 2200:
+            skill_level = 15
+            depth = 15
+        else: # Grandmaster level
+            skill_level = 20
+            depth = 20
+
+        stockfish.set_skill_level(skill_level)
+        stockfish.set_depth(depth)
+
+        # Set the position and get the best move
+        stockfish.set_fen_position(fen)
+        best_move = stockfish.get_best_move()
+
+        if best_move is None:
+             return jsonify({
+                "best_move": None,
+                "explanation": "No legal moves available.",
+                "evaluation": "N/A"
+            })
+
+        # Get the evaluation after finding the best move
+        evaluation_data = stockfish.get_evaluation()
+        evaluation_str = format_evaluation(evaluation_data)
         
+        explanation = f"Stockfish (ELO approx. {elo}) suggests this move after analyzing to a depth of {depth}."
+
         return jsonify({
-            "best_move": move_uci,
+            "best_move": best_move,
             "explanation": explanation,
-            "evaluation": "N/A"
+            "evaluation": evaluation_str
         })
         
-    except KeyError as e:
-        return jsonify({"error": f"Missing key in request: {str(e)}"}), 400
     except Exception as e:
-        print(f"An error occurred: {e}") # This will show in Render's logs for debugging
-        return jsonify({"error": "An internal server error occurred."}), 500
+        print(f"An error occurred in /suggest: {e}")
+        return jsonify({
+            "error": "An internal server error occurred while analyzing the position.",
+            "best_move": None,
+            "explanation": str(e),
+            "evaluation": "N/A"
+        }), 500
 
-# This part below is NOT needed by Render, but it's harmless to leave it.
-# Render will use its own command to start the server.
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
